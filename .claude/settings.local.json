@@ -24,7 +24,8 @@
       "Bash(export PATH=\"$PATH:/Users/yyy/.foundry/bin\")",
       "Bash(/Users/yyy/.foundry/bin/forge test *)",
       "Bash(/Users/yyy/.foundry/bin/forge build *)",
-      "Bash(forge build *)"
+      "Bash(forge build *)",
+      "Bash(git rm *)"
     ]
   }
 }

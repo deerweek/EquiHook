@@ -85,6 +85,7 @@ contract DeployAll is Script {
             IDividendVault(address(vault)),
             IERC20_Hook(address(token1))
         );
+        vault.setHook(address(hook));
         console.log("EquiHook:", address(hook));
 
         // 6. Deploy ComplianceSBT

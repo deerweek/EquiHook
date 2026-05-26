@@ -56,6 +56,10 @@ contract DividendVault {
         compliantUserCount = count;
     }
 
+    function setHook(address _hook) external onlyOwner {
+        hook = IEquiHookVault(_hook);
+    }
+
     function claim() external {
         uint256 owed = earned(msg.sender);
         if (owed == 0) revert NothingToClaim();
