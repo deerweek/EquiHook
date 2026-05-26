@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:www.okx.com)",
+      "WebFetch(domain:www.oklink.com)",
+      "WebFetch(domain:docs.uniswap.org)",
+      "Bash(git init *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(forge init *)",
+      "Read(//Users/yyy/.foundry/**)",
+      "Bash(command -v foundryup)",
+      "Bash(curl -L https://foundry.paradigm.xyz)",
+      "Bash(bash)",
+      "Bash(git clone *)",
+      "Bash(GIT_HTTP_VERSION=1.1 git clone *)",
+      "Bash(cp -r /Users/yyy/Desktop/EquiHook/lib/v4-core/lib/openzeppelin-contracts /Users/yyy/Desktop/EquiHook/lib/openzeppelin-contracts)",
+      "Bash(cp -r /Users/yyy/Desktop/EquiHook/lib/v4-core/lib/solmate /Users/yyy/Desktop/EquiHook/lib/solmate)",
+      "Bash(cat)",
+      "Bash(cp /tmp/test_imports.sol /Users/yyy/Desktop/EquiHook/src/ImportTest.sol)",
+      "Bash(forge test *)",
+      "Bash(export PATH=\"$HOME/.foundry/bin:$PATH\")",
+      "Bash(export PATH=\"$PATH:/Users/yyy/.foundry/bin\")",
+      "Bash(/Users/yyy/.foundry/bin/forge test *)",
+      "Bash(/Users/yyy/.foundry/bin/forge build *)",
+      "Bash(forge build *)"
+    ]
+  }
+}
