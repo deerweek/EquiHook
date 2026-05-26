@@ -25,7 +25,14 @@
       "Bash(/Users/yyy/.foundry/bin/forge test *)",
       "Bash(/Users/yyy/.foundry/bin/forge build *)",
       "Bash(forge build *)",
-      "Bash(git rm *)"
+      "Bash(git rm *)",
+      "Bash(cast wallet *)",
+      "Bash(cast balance *)",
+      "WebFetch(domain:docs.xlayer.tech)",
+      "Bash(export PRIVATE_KEY=\"0xa1280ff7dad3042ddc3c3210ceba103016bd16f4bdcd1395841ec36aed1ebc5d\")",
+      "Bash(forge script *)",
+      "Bash(cast code *)",
+      "Bash(cast call *)"
     ]
   }
 }
