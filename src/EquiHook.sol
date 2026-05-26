@@ -9,6 +9,7 @@ import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {BalanceDelta, BalanceDeltaLibrary} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
+import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
 import {ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 
 // Inline IERC20 interface (solmate ERC20 is abstract, not interface)
@@ -86,24 +87,24 @@ contract EquiHook is IHooks {
 
     // Hook callbacks - all return their selector
     function beforeAddLiquidity(
-        address,
+        address sender,
         PoolKey calldata,
         ModifyLiquidityParams calldata,
         bytes calldata
     ) external override returns (bytes4) {
         if (msg.sender != address(poolManager)) revert NotPoolManager();
-        if (!isCompliant[msg.sender]) revert NotCompliant();
+        if (!isCompliant[sender]) revert NotCompliant();
         return IHooks.beforeAddLiquidity.selector;
     }
 
     function beforeSwap(
-        address,
+        address sender,
         PoolKey calldata key,
         SwapParams calldata params,
         bytes calldata
     ) external override returns (bytes4, BeforeSwapDelta, uint24) {
         if (msg.sender != address(poolManager)) revert NotPoolManager();
-        if (!isCompliant[msg.sender]) revert NotCompliant();
+        if (!isCompliant[sender]) revert NotCompliant();
 
         uint128 swapAmount = params.amountSpecified < 0
             ? uint128(uint256(-params.amountSpecified))
@@ -126,9 +127,12 @@ contract EquiHook is IHooks {
 
         uint256 hookFee = _calculateHookFee(delta);
         if (hookFee > 0) {
-            // Transfer fee tokens from pool manager to vault
-            feeToken.transferFrom(address(poolManager), address(vault), hookFee);
+            // Return negative delta so PoolManager credits the hook with tokens
+            // Then use poolManager.take() to send tokens to the vault
+            Currency outCurrency = delta.amount1() > 0 ? key.currency1 : key.currency0;
+            poolManager.take(outCurrency, address(vault), hookFee);
             vault.addRewards(hookFee);
+            return (IHooks.afterSwap.selector, -int128(int256(hookFee)));
         }
 
         return (IHooks.afterSwap.selector, 0);
