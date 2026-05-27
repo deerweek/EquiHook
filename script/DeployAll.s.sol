@@ -110,7 +110,7 @@ contract DeployAll is Script {
 
         // 5. Deploy HookFactory and mine salt for CREATE2
         HookFactory factory = new HookFactory();
-        uint160 requiredFlags = (1 << 7) | (1 << 6) | (1 << 11);
+        uint160 requiredFlags = (1 << 7) | (1 << 6) | (1 << 11) | (1 << 9) | (1 << 2); // beforeSwap | afterSwap | beforeAddLiquidity | beforeRemoveLiquidity | afterSwapReturnDelta
         uint256 salt = 0;
         address hookAddr = address(0);
         for (uint256 s = 0; s < 500000; s++) {

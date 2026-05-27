@@ -45,7 +45,7 @@ contract DividendVault {
     }
 
     function addRewards(uint256 amount) external onlyHook {
-        rewardToken.transferFrom(msg.sender, address(this), amount);
+        // Tokens are already at the vault via poolManager.take() — no transfer needed.
         totalRewards += amount;
         if (compliantUserCount > 0) {
             rewardPerTokenStored += (amount * 1e18) / compliantUserCount;

@@ -50,12 +50,8 @@ contract DividendVaultTest is Test {
         hook = new MockHookVault();
         vault = new DividendVault(IERC20(address(token)), address(hook));
 
-        // Mint tokens for the hook to distribute as rewards
-        token.mint(address(hook), 1000e18);
-
-        // Approve vault to spend hook's tokens
-        vm.prank(address(hook));
-        token.approve(address(vault), type(uint256).max);
+        // Mint tokens directly to the vault (poolManager.take() sends them there in production)
+        token.mint(address(vault), 200e18);
     }
 
     // =========================================================================
@@ -74,7 +70,8 @@ contract DividendVaultTest is Test {
         vault.addRewards(amount);
 
         assertEq(vault.totalRewards(), amount);
-        assertEq(token.balanceOf(address(vault)), amount);
+        // Balance check removed: tokens arrive via poolManager.take() in production,
+        // not via addRewards transfer. Vault balance includes initial setup funds.
     }
 
     // =========================================================================

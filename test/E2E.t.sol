@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, console} from "forge-std/Test.sol";
 import {PoolManager} from "@uniswap/v4-core/src/PoolManager.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
+import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {PoolSwapTest} from "@uniswap/v4-core/src/test/PoolSwapTest.sol";
 import {EquiHook, IERC20 as IERC20_Hook, IDividendVault} from "../src/EquiHook.sol";
 import {ComplianceSBT} from "../src/ComplianceSBT.sol";
@@ -67,7 +68,14 @@ contract E2ETest is Test {
 
     function _deployHookWithCorrectBits() internal returns (EquiHook) {
         HookDeployer deployer = new HookDeployer();
-        uint160 requiredFlags = (1 << 7) | (1 << 6) | (1 << 11); // beforeSwap | afterSwap | beforeAddLiquidity
+        // Use Hooks constants for correct bit positions:
+        // BEFORE_SWAP_FLAG = 1<<7, AFTER_SWAP_FLAG = 1<<6,
+        // BEFORE_ADD_LIQUIDITY_FLAG = 1<<11, AFTER_SWAP_RETURNS_DELTA_FLAG = 1<<2
+        uint160 requiredFlags = uint160(
+            Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG |
+            Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG |
+            Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
+        );
 
         for (uint256 salt = 0; salt < 200000; salt++) {
             address predicted = deployer.computeAddress(
@@ -77,7 +85,7 @@ contract E2ETest is Test {
                 IDividendVault(address(vault)),
                 IERC20_Hook(address(token1))
             );
-            if (uint160(predicted) & 0x3FFF == requiredFlags) {
+            if (uint160(predicted) & Hooks.ALL_HOOK_MASK == requiredFlags) {
                 address deployed = deployer.deploy(
                     IPoolManager(address(poolManager)),
                     IDividendVault(address(vault)),
@@ -88,7 +96,7 @@ contract E2ETest is Test {
                 return EquiHook(deployed);
             }
         }
-        revert("No valid hook address found in 200000 salts");
+        revert("No valid hook address found");
     }
 
     function setUp() public {
@@ -186,17 +194,17 @@ contract E2ETest is Test {
     }
 
     function test_hookParameters_correct() public {
-        assertEq(hook.baseFee(), 3000);
-        assertEq(hook.maxFee(), 20000);
-        assertEq(hook.liquidityThresholdBps(), 200);
-        assertEq(hook.scalingFactor(), 10);
+        assertEq(hook.TIER0_FEE(), 20000);
+        assertEq(hook.TIER1_FEE(), 3000);
+        assertEq(hook.TIER2_FEE(), 1500);
+        assertEq(hook.TIER2_THRESHOLD(), 30 days);
+        assertEq(hook.SIZE_THRESHOLD_BPS(), 200);
+        assertEq(hook.SIZE_SCALING_FACTOR(), 10);
     }
 
     function test_dividendVault_accumulates() public {
-        token1.mint(address(hook), 1000e6);
-        vm.startPrank(address(hook));
-        token1.approve(address(vault), type(uint256).max);
-        vm.stopPrank();
+        // Tokens arrive at vault via poolManager.take() in production
+        token1.mint(address(vault), 1000e6);
 
         vm.prank(admin);
         vault.setCompliantUserCount(2);

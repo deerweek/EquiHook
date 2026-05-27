@@ -11,6 +11,7 @@ import {BalanceDelta, BalanceDeltaLibrary} from "@uniswap/v4-core/src/types/Bala
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
 import {ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 
 // Inline IERC20 interface (solmate ERC20 is abstract, not interface)
 interface IERC20 {
@@ -26,21 +27,29 @@ interface IDividendVault {
 contract EquiHook is IHooks {
     using PoolIdLibrary for PoolKey;
     using Hooks for IHooks;
+    using SafeCast for uint256;
 
     IPoolManager public immutable poolManager;
     IDividendVault public vault;
     IERC20 public feeToken;
 
     mapping(address => bool) public isCompliant;
+    mapping(address => uint256) public complianceSince; // timestamp of SBT mint
 
-    uint256 public baseFee;             // 3000 = 0.3%
-    uint256 public maxFee;              // 20000 = 2%
-    uint256 public liquidityThresholdBps; // 200 = 2%
-    uint256 public scalingFactor;       // 10
+    // Identity-weighted pricing tiers
+    uint256 public constant TIER0_FEE = 20000;  // 2.0% — no SBT (deterrent)
+    uint256 public constant TIER1_FEE = 3000;   // 0.3% — SBT holder (base)
+    uint256 public constant TIER2_FEE = 1500;   // 0.15% — long-term holder (discount)
+    uint256 public constant TIER2_THRESHOLD = 30 days; // hold duration for Tier 2
+    uint256 public constant SIZE_THRESHOLD_BPS = 200; // 2% — swap size threshold
+    uint256 public constant SIZE_SCALING_FACTOR = 10; // fee increase per BPS over threshold
 
-    error NotCompliant();
+    // LP position identity lock
+    mapping(address => uint128) public userLiquidity; // SBT-bound LP ledger
+
     error NotPoolManager();
-    error InvalidHookResponse();
+    error NotCompliant();
+    error LPNotVerified();
 
     constructor(
         IPoolManager _poolManager,
@@ -50,10 +59,6 @@ contract EquiHook is IHooks {
         poolManager = _poolManager;
         vault = _vault;
         feeToken = _feeToken;
-        baseFee = 3000;
-        maxFee = 20000;
-        liquidityThresholdBps = 200;
-        scalingFactor = 10;
 
         // Validate hook permissions - this verifies the address has correct permission bits
         IHooks(this).validateHookPermissions(
@@ -62,14 +67,14 @@ contract EquiHook is IHooks {
                 afterInitialize: false,
                 beforeAddLiquidity: true,
                 afterAddLiquidity: false,
-                beforeRemoveLiquidity: false,
+                beforeRemoveLiquidity: true,
                 afterRemoveLiquidity: false,
                 beforeSwap: true,
                 afterSwap: true,
                 beforeDonate: false,
                 afterDonate: false,
                 beforeSwapReturnDelta: false,
-                afterSwapReturnDelta: false,
+                afterSwapReturnDelta: true,
                 afterAddLiquidityReturnDelta: false,
                 afterRemoveLiquidityReturnDelta: false
             })
@@ -79,6 +84,7 @@ contract EquiHook is IHooks {
     // Compliance management
     function registerCompliance(address user) external {
         isCompliant[user] = true;
+        if (complianceSince[user] == 0) complianceSince[user] = block.timestamp;
     }
 
     function clearCompliance(address user) external {
@@ -89,11 +95,12 @@ contract EquiHook is IHooks {
     function beforeAddLiquidity(
         address sender,
         PoolKey calldata,
-        ModifyLiquidityParams calldata,
+        ModifyLiquidityParams calldata params,
         bytes calldata
     ) external override returns (bytes4) {
-        if (msg.sender != address(poolManager)) revert NotPoolManager();
-        if (!isCompliant[sender]) revert NotCompliant();
+        // LP position identity lock: require SBT, track liquidity in hook's ledger
+        if (!isCompliant[sender]) revert LPNotVerified();
+        userLiquidity[sender] = userLiquidity[sender] + uint128(uint256(params.liquidityDelta));
         return IHooks.beforeAddLiquidity.selector;
     }
 
@@ -104,35 +111,51 @@ contract EquiHook is IHooks {
         bytes calldata
     ) external override returns (bytes4, BeforeSwapDelta, uint24) {
         if (msg.sender != address(poolManager)) revert NotPoolManager();
-        if (!isCompliant[sender]) revert NotCompliant();
 
+        // Identity-weighted pricing: fee depends on WHO is trading, not just HOW MUCH
+        uint24 fee = _identityFee(sender);
+
+        // Overlay: size-based dynamic scaling on top of identity tier
         uint128 swapAmount = params.amountSpecified < 0
             ? uint128(uint256(-params.amountSpecified))
             : uint128(uint256(params.amountSpecified));
-
         uint256 liquidity = StateLibrary.getLiquidity(poolManager, key.toId());
-        uint24 dynamicFee = _calculateDynamicFee(swapAmount, liquidity);
+        if (liquidity > 0) {
+            uint256 ratioBps = (uint256(swapAmount) * 10000) / liquidity;
+            if (ratioBps > SIZE_THRESHOLD_BPS) {
+                uint256 sizePenalty = (ratioBps - SIZE_THRESHOLD_BPS) * SIZE_SCALING_FACTOR;
+                fee = uint256(fee) + sizePenalty > TIER0_FEE ? uint24(TIER0_FEE) : fee + uint24(sizePenalty);
+            }
+        }
 
-        return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, dynamicFee);
+        return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, fee);
     }
 
     function afterSwap(
         address,
         PoolKey calldata key,
-        SwapParams calldata,
+        SwapParams calldata params,
         BalanceDelta delta,
         bytes calldata
     ) external override returns (bytes4, int128) {
         if (msg.sender != address(poolManager)) revert NotPoolManager();
 
-        uint256 hookFee = _calculateHookFee(delta);
+        // Fee is taken from the unspecified token (same as FeeTakingHook pattern).
+        // For exact input (amountSpecified < 0): unspecified = output token
+        // For exact output (amountSpecified > 0): unspecified = input token
+        bool specifiedTokenIs0 = (params.amountSpecified < 0 == params.zeroForOne);
+        (Currency feeCurrency, int128 swapAmount) = specifiedTokenIs0
+            ? (key.currency1, delta.amount1())
+            : (key.currency0, delta.amount0());
+        if (swapAmount < 0) swapAmount = -swapAmount;
+
+        uint256 hookFee = uint256(uint128(swapAmount)) / 20; // 5% of output
         if (hookFee > 0) {
-            // Return negative delta so PoolManager credits the hook with tokens
-            // Then use poolManager.take() to send tokens to the vault
-            Currency outCurrency = delta.amount1() > 0 ? key.currency1 : key.currency0;
-            poolManager.take(outCurrency, address(vault), hookFee);
+            // take() sends tokens from pool to vault and creates -hookFee delta for this hook.
+            // Returning +hookFee cancels that delta so NonzeroDeltaCount stays 0.
+            poolManager.take(feeCurrency, address(vault), hookFee);
             vault.addRewards(hookFee);
-            return (IHooks.afterSwap.selector, -int128(int256(hookFee)));
+            return (IHooks.afterSwap.selector, hookFee.toInt128());
         }
 
         return (IHooks.afterSwap.selector, 0);
@@ -152,8 +175,13 @@ contract EquiHook is IHooks {
         return (IHooks.afterAddLiquidity.selector, BalanceDeltaLibrary.ZERO_DELTA);
     }
 
-    function beforeRemoveLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
-        external pure override returns (bytes4) {
+    function beforeRemoveLiquidity(address sender, PoolKey calldata, ModifyLiquidityParams calldata params, bytes calldata)
+        external override returns (bytes4) {
+        // LP identity lock: can only remove liquidity you personally added
+        if (params.liquidityDelta >= 0) return IHooks.beforeRemoveLiquidity.selector;
+        uint128 requested = uint128(uint256(-params.liquidityDelta));
+        if (requested > userLiquidity[sender]) revert LPNotVerified();
+        userLiquidity[sender] -= requested;
         return IHooks.beforeRemoveLiquidity.selector;
     }
 
@@ -172,23 +200,9 @@ contract EquiHook is IHooks {
         return IHooks.afterDonate.selector;
     }
 
-    function _calculateDynamicFee(uint128 swapAmount, uint256 liquidity) internal view returns (uint24) {
-        if (liquidity == 0) return uint24(baseFee);
-
-        uint256 ratioBps = (uint256(swapAmount) * 10000) / liquidity;
-        if (ratioBps < liquidityThresholdBps) {
-            return uint24(baseFee);
-        }
-
-        uint256 feeIncrease = (ratioBps - liquidityThresholdBps) * scalingFactor;
-        uint256 fee = baseFee + feeIncrease;
-        if (fee > maxFee) fee = maxFee;
-        return uint24(fee);
-    }
-
-    function _calculateHookFee(BalanceDelta delta) internal pure returns (uint256) {
-        int128 amountOut = delta.amount1() > 0 ? delta.amount1() : delta.amount0();
-        if (amountOut <= 0) return 0;
-        return uint256(uint128(amountOut)) / 20; // 5% of output as hook fee
+    function _identityFee(address user) internal view returns (uint24) {
+        if (!isCompliant[user]) return uint24(TIER0_FEE);           // 2.0% — unverified
+        if (block.timestamp - complianceSince[user] >= TIER2_THRESHOLD) return uint24(TIER2_FEE); // 0.15% — long-term
+        return uint24(TIER1_FEE);                                    // 0.3% — standard SBT holder
     }
 }
