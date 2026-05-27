@@ -225,12 +225,15 @@ contract ComplianceSBTTest is Test {
     //                          supportsInterface
     // =========================================================================
 
-    function test_supportsInterface_ERC721() public {
+    function test_supportsInterface_ERC721() public view {
         assertTrue(sbt.supportsInterface(0x80ac58cd));
     }
 
-    function test_supportsInterface_ERC165() public {
-        // After our override, ERC165 is not supported
-        assertFalse(sbt.supportsInterface(0x01ffc9a7));
+    function test_supportsInterface_ERC165() public view {
+        assertTrue(sbt.supportsInterface(0x01ffc9a7));
+    }
+
+    function test_supportsInterface_ERC721Metadata() public view {
+        assertTrue(sbt.supportsInterface(0x5b5e139f));
     }
 }

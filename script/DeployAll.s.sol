@@ -8,6 +8,7 @@ import {PoolSwapTest} from "@uniswap/v4-core/src/test/PoolSwapTest.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
+import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {EquiHook, IERC20 as IERC20_Hook, IDividendVault} from "../src/EquiHook.sol";
 import {ComplianceSBT} from "../src/ComplianceSBT.sol";
 import {DividendVault, IERC20 as IERC20_Vault} from "../src/DividendVault.sol";
@@ -15,14 +16,15 @@ import {DividendVault, IERC20 as IERC20_Vault} from "../src/DividendVault.sol";
 contract MockERC20 {
     string public name;
     string public symbol;
-    uint8 public decimals = 18;
+    uint8 public immutable decimals;
     uint256 public totalSupply;
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
 
-    constructor(string memory _name, string memory _symbol) {
+    constructor(string memory _name, string memory _symbol, uint8 _decimals) {
         name = _name;
         symbol = _symbol;
+        decimals = _decimals;
     }
 
     function mint(address to, uint256 amount) external {
@@ -50,16 +52,12 @@ contract MockERC20 {
 }
 
 contract HookFactory {
-    function deploy(
-        IPoolManager poolManager,
-        IDividendVault vault,
-        IERC20_Hook feeToken,
-        uint256 salt
-    ) external returns (address) {
-        bytes memory bytecode = abi.encodePacked(
-            type(EquiHook).creationCode,
-            abi.encode(poolManager, vault, feeToken)
-        );
+    function deploy(IPoolManager poolManager, IDividendVault vault, IERC20_Hook feeToken, address owner, uint256 salt)
+        external
+        returns (address)
+    {
+        bytes memory bytecode =
+            abi.encodePacked(type(EquiHook).creationCode, abi.encode(poolManager, vault, feeToken, owner));
         address addr;
         assembly {
             addr := create2(0, add(bytecode, 0x20), mload(bytecode), salt)
@@ -72,11 +70,11 @@ contract HookFactory {
         uint256 salt,
         IPoolManager poolManager,
         IDividendVault vault,
-        IERC20_Hook feeToken
+        IERC20_Hook feeToken,
+        address owner
     ) external view returns (address) {
         bytes memory bytecode = abi.encodePacked(
-            type(EquiHook).creationCode,
-            abi.encode(poolManager, vault, feeToken)
+            type(EquiHook).creationCode, abi.encode(poolManager, vault, feeToken, owner)
         );
         bytes32 hash = keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, keccak256(bytecode)));
         return address(uint160(uint256(hash)));
@@ -91,8 +89,8 @@ contract DeployAll is Script {
         vm.startBroadcast(deployerPrivateKey);
 
         // 1. Deploy mock tokens
-        MockERC20 token0 = new MockERC20("Wrapped ETH", "WETH");
-        MockERC20 token1 = new MockERC20("USD Coin", "USDC");
+        MockERC20 token0 = new MockERC20("Wrapped ETH", "WETH", 18);
+        MockERC20 token1 = new MockERC20("USD Coin", "USDC", 6);
         console.log("Token0 (WETH):", address(token0));
         console.log("Token1 (USDC):", address(token1));
 
@@ -118,7 +116,8 @@ contract DeployAll is Script {
                 s,
                 IPoolManager(address(poolManager)),
                 IDividendVault(address(vault)),
-                IERC20_Hook(address(token1))
+                IERC20_Hook(address(token1)),
+                deployer
             );
             if (uint160(predicted) & 0x3FFF == requiredFlags) {
                 salt = s;
@@ -131,18 +130,23 @@ contract DeployAll is Script {
         console.log("Hook address:", hookAddr);
 
         // Deploy hook via factory
-        EquiHook hook = EquiHook(factory.deploy(
-            IPoolManager(address(poolManager)),
-            IDividendVault(address(vault)),
-            IERC20_Hook(address(token1)),
-            salt
-        ));
+        EquiHook hook = EquiHook(
+            factory.deploy(
+                IPoolManager(address(poolManager)),
+                IDividendVault(address(vault)),
+                IERC20_Hook(address(token1)),
+                deployer,
+                salt
+            )
+        );
         require(address(hook) == hookAddr, "Address mismatch");
         vault.setHook(address(hook));
+        hook.setIdentityRelayer(address(swapRouter), true);
         console.log("EquiHook deployed:", address(hook));
 
         // 6. Deploy ComplianceSBT
         ComplianceSBT sbt = new ComplianceSBT("EquiHook KYC", "EHKYC", address(hook));
+        hook.setComplianceIssuer(address(sbt));
         console.log("ComplianceSBT:", address(sbt));
 
         // 7. Sort tokens
@@ -154,7 +158,7 @@ contract DeployAll is Script {
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(tokenA),
             currency1: Currency.wrap(tokenB),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: IHooks(address(hook))
         });
@@ -177,5 +181,15 @@ contract DeployAll is Script {
         console.log("SwapRouter:", address(swapRouter));
         console.log("Token0 (WETH):", address(token0));
         console.log("Token1 (USDC):", address(token1));
+
+        console.log("\n=== COPY/PASTE ENV ===");
+        console.log(string.concat("export HOOK_ADDRESS=", vm.toString(address(hook))));
+        console.log(string.concat("export SBT_ADDRESS=", vm.toString(address(sbt))));
+        console.log(string.concat("export VAULT_ADDRESS=", vm.toString(address(vault))));
+        console.log(string.concat("export POOL_MANAGER_ADDRESS=", vm.toString(address(poolManager))));
+        console.log(string.concat("export SWAP_ROUTER_ADDRESS=", vm.toString(address(swapRouter))));
+        console.log(string.concat("export WETH_ADDRESS=", vm.toString(address(token0))));
+        console.log(string.concat("export USDC_ADDRESS=", vm.toString(address(token1))));
+        console.log(string.concat("export FEE_TOKEN_ADDRESS=", vm.toString(address(token1))));
     }
 }

@@ -54,15 +54,20 @@ contract DividendVaultTest is Test {
         token.mint(address(vault), 200e18);
     }
 
+    function _syncUser(address user, bool compliant) internal {
+        hook.setCompliant(user, compliant);
+        vm.prank(address(hook));
+        vault.syncCompliance(user);
+    }
+
     // =========================================================================
     //                       addRewards: updates totalRewards
     // =========================================================================
 
     function test_addRewards_updatesTotalRewardsAndBalance() public {
         // Set up 2 compliant users
-        hook.setCompliant(user1, true);
-        hook.setCompliant(user2, true);
-        vault.setCompliantUserCount(2);
+        _syncUser(user1, true);
+        _syncUser(user2, true);
 
         // Hook adds rewards
         uint256 amount = 100e18;
@@ -80,7 +85,10 @@ contract DividendVaultTest is Test {
 
     function test_addRewards_distributesPerTokenCorrectly() public {
         // 4 compliant users
-        vault.setCompliantUserCount(4);
+        _syncUser(user1, true);
+        _syncUser(user2, true);
+        _syncUser(user3, true);
+        _syncUser(address(0xA4), true);
 
         uint256 amount = 200e18;
         vm.prank(address(hook));
@@ -89,14 +97,12 @@ contract DividendVaultTest is Test {
         // rewardPerTokenStored is 1e18-scaled: (200e18 * 1e18) / 4
         // But earned() divides by 1e18, so each user's share = 50e18
         // Test via earned() which is the user-facing value
-        hook.setCompliant(user1, true);
+        _syncUser(user1, true);
         assertEq(vault.earned(user1), 50e18);
     }
 
     function test_addRewards_zeroCompliantUsers_noRevert() public {
         // With 0 compliant users, rewardPerTokenStored should stay 0
-        vault.setCompliantUserCount(0);
-
         vm.prank(address(hook));
         vault.addRewards(100e18);
 
@@ -109,8 +115,7 @@ contract DividendVaultTest is Test {
     // =========================================================================
 
     function test_claim_singleUser_receivesCorrectReward() public {
-        hook.setCompliant(user1, true);
-        vault.setCompliantUserCount(1);
+        _syncUser(user1, true);
 
         uint256 amount = 100e18;
         vm.prank(address(hook));
@@ -127,9 +132,8 @@ contract DividendVaultTest is Test {
     }
 
     function test_claim_twoUsers_eachGetsHalf() public {
-        hook.setCompliant(user1, true);
-        hook.setCompliant(user2, true);
-        vault.setCompliantUserCount(2);
+        _syncUser(user1, true);
+        _syncUser(user2, true);
 
         uint256 amount = 100e18;
         vm.prank(address(hook));
@@ -153,8 +157,7 @@ contract DividendVaultTest is Test {
     // =========================================================================
 
     function test_claim_noRewards_reverts() public {
-        hook.setCompliant(user1, true);
-        vault.setCompliantUserCount(1);
+        _syncUser(user1, true);
 
         // No rewards added yet
         vm.prank(user1);
@@ -167,9 +170,8 @@ contract DividendVaultTest is Test {
     // =========================================================================
 
     function test_multipleRounds_claimsCorrectAcrossRounds() public {
-        hook.setCompliant(user1, true);
-        hook.setCompliant(user2, true);
-        vault.setCompliantUserCount(2);
+        _syncUser(user1, true);
+        _syncUser(user2, true);
 
         // Round 1: 100 tokens, each gets 50
         vm.prank(address(hook));
@@ -205,10 +207,9 @@ contract DividendVaultTest is Test {
         assertEq(token.balanceOf(user2), 100e18); // 50 + 50
     }
 
-    function test_multipleRounds_userJoinsLate_earnedBackdated() public {
+    function test_multipleRounds_userJoinsLate_doesNotEarnPastRewards() public {
         // Only user1 is compliant initially
-        hook.setCompliant(user1, true);
-        vault.setCompliantUserCount(1);
+        _syncUser(user1, true);
 
         // Round 1: 100 tokens to 1 user
         vm.prank(address(hook));
@@ -217,35 +218,55 @@ contract DividendVaultTest is Test {
         assertEq(vault.earned(user1), 100e18);
 
         // Now user2 becomes compliant, count increases
-        hook.setCompliant(user2, true);
-        vault.setCompliantUserCount(2);
+        _syncUser(user2, true);
 
         // Round 2: 100 tokens to 2 users (50 each incremental)
         vm.prank(address(hook));
         vault.addRewards(100e18);
 
         // rewardPerTokenStored = 100e18 + 50e18 = 150e18
-        // user1: 150e18 - 0 = 150e18
-        // user2: 150e18 - 0 = 150e18 (backdated! user2 wasn't present in round 1)
-        // This is a known design characteristic: without per-user balances,
-        // late joiners see the full accumulated rewardPerTokenStored.
+        // user1 joined before round 1, so earns 150e18 total.
+        // user2 synced after round 1, so only earns the round 2 share.
         assertEq(vault.earned(user1), 150e18);
-        assertEq(vault.earned(user2), 150e18);
+        assertEq(vault.earned(user2), 50e18);
 
         // user1 can claim their full earned amount
         vm.prank(user1);
         vault.claim();
         assertEq(token.balanceOf(user1), 150e18);
 
-        // user2 tries to claim 150e18 but vault only has 50e18 remaining
-        // (100e18 total deposits - 150e18 paid to user1 = -50e18 shortfall)
-        // This demonstrates the backdating insolvency characteristic
-        assertEq(vault.earned(user2), 150e18);
+        assertEq(vault.earned(user2), 50e18);
         assertEq(token.balanceOf(address(vault)), 50e18);
-        // user2's claim would revert due to insufficient vault balance
+
         vm.prank(user2);
-        vm.expectRevert(); // underflow in solmate transfer
         vault.claim();
+        assertEq(token.balanceOf(user2), 50e18);
+    }
+
+    function test_syncCompliance_nonHook_reverts() public {
+        vm.prank(nonHook);
+        vm.expectRevert(DividendVault.NotHook.selector);
+        vault.syncCompliance(user1);
+    }
+
+    function test_syncCompliance_revokeSnapshotsEarnedRewards() public {
+        _syncUser(user1, true);
+
+        vm.prank(address(hook));
+        vault.addRewards(100e18);
+
+        _syncUser(user1, false);
+        assertFalse(vault.isRewardParticipant(user1));
+        assertEq(vault.compliantUserCount(), 0);
+        assertEq(vault.earned(user1), 100e18);
+
+        vm.prank(address(hook));
+        vault.addRewards(100e18);
+        assertEq(vault.earned(user1), 100e18);
+
+        vm.prank(user1);
+        vault.claim();
+        assertEq(token.balanceOf(user1), 100e18);
     }
 
     // =========================================================================
@@ -265,30 +286,14 @@ contract DividendVaultTest is Test {
     }
 
     // =========================================================================
-    //           onlyOwner: non-owner setCompliantUserCount reverts
-    // =========================================================================
-
-    function test_setCompliantUserCount_nonOwner_reverts() public {
-        vm.prank(nonOwner);
-        vm.expectRevert(DividendVault.NotOwner.selector);
-        vault.setCompliantUserCount(5);
-    }
-
-    function test_setCompliantUserCount_hookNotOwner_reverts() public {
-        vm.prank(address(hook));
-        vm.expectRevert(DividendVault.NotOwner.selector);
-        vault.setCompliantUserCount(5);
-    }
-
-    // =========================================================================
     //                          View functions
     // =========================================================================
 
-    function test_earned_zeroWhenNoRewards() public {
+    function test_earned_zeroWhenNoRewards() public view {
         assertEq(vault.earned(user1), 0);
     }
 
-    function test_constructor_setsStateCorrectly() public {
+    function test_constructor_setsStateCorrectly() public view {
         assertEq(address(vault.rewardToken()), address(token));
         assertEq(address(vault.hook()), address(hook));
         assertEq(vault.owner(), owner);

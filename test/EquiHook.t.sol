@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import {Test, console} from "forge-std/Test.sol";
 import {BalanceDelta, BalanceDeltaLibrary, toBalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
+import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {EquiHook, IERC20, IDividendVault} from "../src/EquiHook.sol";
 
 // =========================================================================
@@ -12,10 +13,12 @@ import {EquiHook, IERC20, IDividendVault} from "../src/EquiHook.sol";
 /// @notice Exposes internal EquiHook functions for testing without requiring
 /// a valid hook address (which would need specific address bits).
 contract EquiHookHarness {
+    uint24 public constant OVERRIDE_FEE_FLAG = 0x400000;
+
     // Identity-weighted pricing tiers (mirrors EquiHook constants)
-    uint256 public constant TIER0_FEE = 20000;  // 2.0% — no SBT
-    uint256 public constant TIER1_FEE = 3000;   // 0.3% — SBT holder
-    uint256 public constant TIER2_FEE = 1500;   // 0.15% — long-term holder
+    uint24 public constant TIER0_FEE = 20000; // 2.0% — no SBT
+    uint24 public constant TIER1_FEE = 3000; // 0.3% — SBT holder
+    uint24 public constant TIER2_FEE = 1500; // 0.15% — long-term holder
     uint256 public constant TIER2_THRESHOLD = 30 days;
     uint256 public constant SIZE_THRESHOLD_BPS = 200;
     uint256 public constant SIZE_SCALING_FACTOR = 10;
@@ -33,9 +36,14 @@ contract EquiHookHarness {
     }
 
     function identityFee(address user) external view returns (uint24) {
-        if (!isCompliant[user]) return uint24(TIER0_FEE);
-        if (block.timestamp - complianceSince[user] >= TIER2_THRESHOLD) return uint24(TIER2_FEE);
-        return uint24(TIER1_FEE);
+        if (!isCompliant[user]) return TIER0_FEE;
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp - complianceSince[user] >= TIER2_THRESHOLD) return TIER2_FEE;
+        return TIER1_FEE;
+    }
+
+    function identityFeeOverride(address user) external view returns (uint24) {
+        return this.identityFee(user) | OVERRIDE_FEE_FLAG;
     }
 
     function calculateHookFee(BalanceDelta delta) external pure returns (uint256) {
@@ -43,7 +51,7 @@ contract EquiHookHarness {
         int128 amount1 = delta.amount1();
         int128 amountOut = amount1 > 0 ? amount1 : amount0;
         if (amountOut <= 0) return 0;
-        return uint256(uint128(amountOut)) / 20;
+        return uint256(SafeCast.toUint128(amountOut)) / 20;
     }
 }
 
@@ -110,7 +118,7 @@ contract EquiHookTest is Test {
     //        Identity-Weighted Pricing: 3-tier fee structure
     // =========================================================================
 
-    function test_identityFee_tier0_noSBT_returnsMaxFee() public {
+    function test_identityFee_tier0_noSBT_returnsMaxFee() public view {
         // No SBT → 2.0% deterrent fee
         assertEq(harness.identityFee(user1), 20000);
     }
@@ -159,59 +167,69 @@ contract EquiHookTest is Test {
     //        Default parameter values
     // =========================================================================
 
-    function test_defaultParameters() public {
+    function test_defaultParameters() public view {
         assertEq(harness.TIER0_FEE(), 20000);
         assertEq(harness.TIER1_FEE(), 3000);
         assertEq(harness.TIER2_FEE(), 1500);
         assertEq(harness.SIZE_THRESHOLD_BPS(), 200);
         assertEq(harness.SIZE_SCALING_FACTOR(), 10);
+        assertEq(harness.OVERRIDE_FEE_FLAG(), 0x400000);
+    }
+
+    function test_identityFeeOverride_setsV4OverrideFlag() public {
+        harness.registerCompliance(user1);
+
+        uint24 overrideFee = harness.identityFeeOverride(user1);
+
+        assertEq(overrideFee & harness.OVERRIDE_FEE_FLAG(), harness.OVERRIDE_FEE_FLAG());
+        assertEq(overrideFee & 0xBFFFFF, 3000);
     }
 
     // =========================================================================
     //           Hook Fee: output amount calculation
     // =========================================================================
 
-    function test_hookFee_zeroDelta_returnsZero() public {
+    function test_hookFee_zeroDelta_returnsZero() public view {
         BalanceDelta zeroDelta = BalanceDeltaLibrary.ZERO_DELTA;
         assertEq(harness.calculateHookFee(zeroDelta), 0);
     }
 
-    function test_hookFee_negativeDelta_returnsZero() public {
+    function test_hookFee_negativeDelta_returnsZero() public view {
         BalanceDelta negativeDelta = toBalanceDelta(-1000, -500);
         assertEq(harness.calculateHookFee(negativeDelta), 0);
     }
 
-    function test_hookFee_positiveAmount1_returns5Percent() public {
+    function test_hookFee_positiveAmount1_returns5Percent() public view {
         BalanceDelta delta = toBalanceDelta(0, 1000);
         assertEq(harness.calculateHookFee(delta), 50);
     }
 
-    function test_hookFee_positiveAmount0_returns5Percent() public {
+    function test_hookFee_positiveAmount0_returns5Percent() public view {
         BalanceDelta delta = toBalanceDelta(2000, 0);
         assertEq(harness.calculateHookFee(delta), 100);
     }
 
-    function test_hookFee_bothPositive_prefersAmount1() public {
+    function test_hookFee_bothPositive_prefersAmount1() public view {
         BalanceDelta delta = toBalanceDelta(500, 1000);
         assertEq(harness.calculateHookFee(delta), 50);
     }
 
-    function test_hookFee_amount1Zero_usesAmount0() public {
+    function test_hookFee_amount1Zero_usesAmount0() public view {
         BalanceDelta delta = toBalanceDelta(4000, 0);
         assertEq(harness.calculateHookFee(delta), 200);
     }
 
-    function test_hookFee_largeOutput_correctFee() public {
+    function test_hookFee_largeOutput_correctFee() public view {
         BalanceDelta delta = toBalanceDelta(0, 1_000_000);
         assertEq(harness.calculateHookFee(delta), 50_000);
     }
 
-    function test_hookFee_smallOutput_truncated() public {
+    function test_hookFee_smallOutput_truncated() public view {
         BalanceDelta delta = toBalanceDelta(0, 19);
         assertEq(harness.calculateHookFee(delta), 0);
     }
 
-    function test_hookFee_exact20_returns1() public {
+    function test_hookFee_exact20_returns1() public view {
         BalanceDelta delta = toBalanceDelta(0, 20);
         assertEq(harness.calculateHookFee(delta), 1);
     }

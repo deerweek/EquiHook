@@ -21,12 +21,18 @@ contract DividendVault {
 
     mapping(address => uint256) public userRewardPerTokenPaid;
     mapping(address => uint256) public claimable;
+    mapping(address => bool) public isRewardParticipant;
 
     address public owner;
 
     error NotOwner();
     error NotHook();
     error NothingToClaim();
+    error TransferFailed();
+
+    event RewardsAdded(uint256 amount, uint256 rewardPerTokenStored);
+    event ComplianceSynced(address indexed user, bool active, uint256 compliantUserCount);
+    event RewardsClaimed(address indexed user, uint256 amount);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -50,10 +56,24 @@ contract DividendVault {
         if (compliantUserCount > 0) {
             rewardPerTokenStored += (amount * 1e18) / compliantUserCount;
         }
+        emit RewardsAdded(amount, rewardPerTokenStored);
     }
 
-    function setCompliantUserCount(uint256 count) external onlyOwner {
-        compliantUserCount = count;
+    function syncCompliance(address user) external onlyHook {
+        bool compliant = hook.isCompliant(user);
+        bool active = isRewardParticipant[user];
+
+        if (compliant && !active) {
+            isRewardParticipant[user] = true;
+            userRewardPerTokenPaid[user] = rewardPerTokenStored;
+            compliantUserCount += 1;
+        } else if (!compliant && active) {
+            claimable[user] = earned(user);
+            userRewardPerTokenPaid[user] = rewardPerTokenStored;
+            isRewardParticipant[user] = false;
+            compliantUserCount -= 1;
+        }
+        emit ComplianceSynced(user, isRewardParticipant[user], compliantUserCount);
     }
 
     function setHook(address _hook) external onlyOwner {
@@ -66,11 +86,15 @@ contract DividendVault {
 
         userRewardPerTokenPaid[msg.sender] = rewardPerTokenStored;
         claimable[msg.sender] = 0;
-        rewardToken.transfer(msg.sender, owed);
+        if (!rewardToken.transfer(msg.sender, owed)) revert TransferFailed();
+        emit RewardsClaimed(msg.sender, owed);
     }
 
     function earned(address user) public view returns (uint256) {
-        return claimable[user] +
-            (rewardPerTokenStored - userRewardPerTokenPaid[user]) / 1e18;
+        uint256 accrued = claimable[user];
+        if (isRewardParticipant[user]) {
+            accrued += (rewardPerTokenStored - userRewardPerTokenPaid[user]) / 1e18;
+        }
+        return accrued;
     }
 }

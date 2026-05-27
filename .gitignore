@@ -13,9 +13,13 @@ out/
 
 # Docs
 docs/
+!/docs/
+/docs/*
+!docs/SUBMISSION.md
 
 # Dotenv file
 .env
 .env.*
 !.env.example
+.claude/
 .DS_Store

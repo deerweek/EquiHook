@@ -7,21 +7,17 @@ import {PoolManager} from "@uniswap/v4-core/src/PoolManager.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 
 contract DummyDeployer {
-    function computeAddress(
-        address deployer,
-        uint256 salt,
-        bytes32 bytecodeHash
-    ) external pure returns (address) {
+    function computeAddress(address deployer, uint256 salt, bytes32 bytecodeHash) external pure returns (address) {
         bytes32 hash = keccak256(abi.encodePacked(bytes1(0xff), deployer, salt, bytecodeHash));
         return address(uint160(uint256(hash)));
     }
 }
 
 contract MineSalt is Script {
-    function run() external {
+    function run() external pure {
         uint160 requiredFlags = uint160(
-            Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG |
-            Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
+            Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
+                | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
         );
 
         console.log("Required flags:");
@@ -36,11 +32,9 @@ contract MineSalt is Script {
         // The test uses: deployer = address of HookDeployer contract
         // Let's pre-compute with a generic approach.
 
-        console.log("Bits needed: 6,7,10,11 = 0xCC0");
-        console.log("This requires running the E2E test with a smaller loop or pre-mining.");
-
-        // Actually, the issue is gas limit. Let me use ffi to find the salt.
-        // Or, let's try a much simpler approach: just deploy the hook at ANY address
-        // and register the pool with it manually.
+        console.log(
+            "Bits needed: beforeAddLiquidity, beforeRemoveLiquidity, beforeSwap, afterSwap, afterSwapReturnDelta"
+        );
+        console.log("DeployAll.s.sol mines the final salt with the real constructor args.");
     }
 }

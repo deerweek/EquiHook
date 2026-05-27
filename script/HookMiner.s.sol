@@ -5,16 +5,21 @@ import {Script, console} from "forge-std/Script.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 
 contract HookMiner is Script {
-    function run() external view {
+    function run() external pure {
         // Hook flags we need (based on EquiHook constructor permissions):
         // beforeSwap (bit 7)
         // afterSwap (bit 6)
         // beforeAddLiquidity (bit 11)
+        // beforeRemoveLiquidity (bit 9)
+        // afterSwapReturnDelta (bit 2)
         uint160 flagBeforeSwap = uint160(Hooks.BEFORE_SWAP_FLAG);
         uint160 flagAfterSwap = uint160(Hooks.AFTER_SWAP_FLAG);
         uint160 flagBeforeAddLiquidity = uint160(Hooks.BEFORE_ADD_LIQUIDITY_FLAG);
+        uint160 flagBeforeRemoveLiquidity = uint160(Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG);
+        uint160 flagAfterSwapReturnDelta = uint160(Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG);
 
-        uint160 requiredFlags = flagBeforeSwap | flagAfterSwap | flagBeforeAddLiquidity;
+        uint160 requiredFlags = flagBeforeSwap | flagAfterSwap | flagBeforeAddLiquidity | flagBeforeRemoveLiquidity
+            | flagAfterSwapReturnDelta;
 
         console.log("=== Hook Address Mining Info ===");
         console.log("");
@@ -25,6 +30,10 @@ contract HookMiner is Script {
         console.logUint(flagAfterSwap);
         console.log("  BEFORE_ADD_LIQUIDITY_FLAG (bit 11):");
         console.logUint(flagBeforeAddLiquidity);
+        console.log("  BEFORE_REMOVE_LIQUIDITY_FLAG (bit 9):");
+        console.logUint(flagBeforeRemoveLiquidity);
+        console.log("  AFTER_SWAP_RETURNS_DELTA_FLAG (bit 2):");
+        console.logUint(flagAfterSwapReturnDelta);
         console.log("");
         console.log("Combined required flags:");
         console.logUint(requiredFlags);

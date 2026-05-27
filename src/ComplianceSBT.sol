@@ -24,11 +24,7 @@ contract ComplianceSBT is ERC721 {
         _;
     }
 
-    constructor(
-        string memory name,
-        string memory symbol,
-        address _hook
-    ) ERC721(name, symbol) {
+    constructor(string memory name, string memory symbol, address _hook) ERC721(name, symbol) {
         admin = msg.sender;
         hook = IEquiHook(_hook);
     }
@@ -70,7 +66,7 @@ contract ComplianceSBT is ERC721 {
         revert TransferBlocked();
     }
 
-    function supportsInterface(bytes4 interfaceId) public pure override returns (bool) {
-        return interfaceId == 0x80ac58cd; // ERC721 only
+    function supportsInterface(bytes4 interfaceId) public view override returns (bool) {
+        return super.supportsInterface(interfaceId);
     }
 }
