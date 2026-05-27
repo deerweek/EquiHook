@@ -59,7 +59,7 @@ Vault reward token balance = 493
 
 | Hook surface | Behavior |
 |--------------|----------|
-| `beforeSwap` | Resolves the real user identity from `hookData`, then returns `OVERRIDE_FEE_FLAG | tierFee` on a v4 dynamic-fee pool. |
+| `beforeSwap` | Resolves the real user identity from `hookData`, then returns a v4 override fee using the identity tier on a dynamic-fee pool. |
 | `afterSwap` | Routes 5% of feeToken-denominated swap output to `DividendVault`; non-feeToken paths emit a skip event instead of corrupting rewards. |
 | `beforeAddLiquidity` | Requires a compliant SBT identity and records liquidity in a user-bound ledger. |
 | `beforeRemoveLiquidity` | Prevents users from removing more hook-tracked liquidity than their identity added. |
