@@ -1,72 +1,101 @@
-# EquiHook - Identity-Weighted RWA Hook for Uniswap v4
+<h1 align="center">EquiHook</h1>
 
-> **KYC-aware swaps, identity-based fees, and on-chain dividend distribution - all in a single Uniswap v4 Hook.**
+<p align="center">
+  <strong>Identity-weighted RWA liquidity for Uniswap v4 on X Layer.</strong>
+</p>
 
-EquiHook is a Uniswap v4 Hook that records KYC compliance via Soulbound Tokens (SBTs), applies identity-weighted dynamic fees through a real v4 dynamic-fee pool, resolves end-user identity through authorized hookData relayers instead of trusting router addresses, locks LP positions to verified identities, and routes excess fees to a DividendVault as synthetic dividends.
+<p align="center">
+  <img alt="X Layer testnet" src="https://img.shields.io/badge/X%20Layer-Testnet-16a34a">
+  <img alt="Uniswap v4 Hook" src="https://img.shields.io/badge/Uniswap-v4%20Hook-ff007a">
+  <img alt="Foundry tests" src="https://img.shields.io/badge/Foundry-66%2F66%20tests-2ea44f">
+  <img alt="Solidity 0.8.26" src="https://img.shields.io/badge/Solidity-0.8.26-363636">
+</p>
 
-For the rubric-aligned submission evidence, see [docs/SUBMISSION.md](docs/SUBMISSION.md).
+<p align="center">
+  <a href="docs/SUBMISSION.md">Submission Notes</a>
+  ·
+  <a href="https://www.oklink.com/xlayer/address/0x0f88692065F92f45B686bf6F616dfE0F32A20AC4">Live Hook</a>
+  ·
+  <a href="https://www.oklink.com/xlayer/tx/0x9a7bdb08ab000dd6bb478ea35d38e19f6385285ed3c132d3193ebc9324642a27">Triggering Swap</a>
+</p>
+
+EquiHook turns a Uniswap v4 pool into a compliant RWA market primitive. It records KYC status with soulbound identity, prices swaps with identity-weighted dynamic fees, locks LP positions to verified users, and routes feeToken-denominated hook fees into an on-chain DividendVault.
+
+The final X Layer testnet deployment is live, demonstrable, and verifiable by transaction history plus a read-only verification script.
+
+## At A Glance
+
+| Area | Status |
+|------|--------|
+| Chain | X Layer testnet, chain ID `1952` |
+| Hook trigger | Real swap transaction triggers `beforeSwap` and `afterSwap` |
+| Verification | Read-only Foundry script; no private key required |
+| Test suite | `66` passing tests across SBT, vault, hook, and E2E flows |
+| Submission focus | Innovation, market value, deployed completion, on-chain proof |
+
+## Live Proof
+
+| Evidence | Link / Value |
+|----------|--------------|
+| Final Hook | [`0x0f88692065F92f45B686bf6F616dfE0F32A20AC4`](https://www.oklink.com/xlayer/address/0x0f88692065F92f45B686bf6F616dfE0F32A20AC4) |
+| Real swap that triggered the Hook | [`0x9a7bdb08...`](https://www.oklink.com/xlayer/tx/0x9a7bdb08ab000dd6bb478ea35d38e19f6385285ed3c132d3193ebc9324642a27) |
+| Chain | X Layer testnet, chain ID `1952` |
+| Pool ID | `0x27fd8e3f6b89feb2b9724c3f46225d4928794d37e4986063df93bafc9726f1ae` |
+| Submission notes | [docs/SUBMISSION.md](docs/SUBMISSION.md) |
+
+`VerifySubmission.s.sol` confirms the post-swap state directly from X Layer:
+
+```text
+Pool active liquidity = 1000000
+SBT balance(demo user) = 1
+isCompliant(demo user) = true
+Hook-tracked liquidity = 1000000
+Vault totalRewards = 493
+Demo user earned = 493
+Vault reward token balance = 493
+```
+
+## What It Does
+
+| Hook surface | Behavior |
+|--------------|----------|
+| `beforeSwap` | Resolves the real user identity from `hookData`, then returns `OVERRIDE_FEE_FLAG | tierFee` on a v4 dynamic-fee pool. |
+| `afterSwap` | Routes 5% of feeToken-denominated swap output to `DividendVault`; non-feeToken paths emit a skip event instead of corrupting rewards. |
+| `beforeAddLiquidity` | Requires a compliant SBT identity and records liquidity in a user-bound ledger. |
+| `beforeRemoveLiquidity` | Prevents users from removing more hook-tracked liquidity than their identity added. |
+| SBT issuer flow | Merkle-proof soulbound minting syncs compliance into the Hook; revocation clears it. |
 
 ## Architecture
 
 ```mermaid
 graph TD
-    User([Trader / LP]) -->|1. Initiate Swap| PM[Uniswap v4 PoolManager]
+    User([Trader or LP]) -->|swap / liquidity| Router[Authorized Router or Helper]
+    Router -->|hookData identity| PM[Uniswap v4 PoolManager]
 
-    PM -->|2. Trigger| BS[beforeSwap Hook]
-    BS -->|3. Read State| SBT{Verify Identity SBT?}
-    SBT -->|No| Tier0[Apply Tier 0 Deterrent Fee]
-    SBT -->|Yes| Calc[Calculate Price Impact & Scale Dynamic Fee]
-    Tier0 -->|4. Return Override Fee| PM
-    Calc -->|4. Return Override Fee| PM
+    PM -->|beforeSwap| Hook[EquiHook]
+    Hook -->|read identity state| SBT[ComplianceSBT]
+    Hook -->|return fee override| PM
 
-    PM -->|5. Execute AMM Math| Pool[X Layer On-Chain Pool]
+    PM -->|execute dynamic-fee pool| Pool[X Layer v4 Pool]
+    PM -->|afterSwap| Hook
+    Hook -->|feeToken rewards| Vault[DividendVault]
+    Vault -->|claimable rewards| Holder([Compliant Holders])
 
-    Pool -->|6. Trigger| AS[afterSwap Hook]
-    AS -->|7. Capture Excess Slippage Fee| Vault[Dividend Vault]
-    Vault -->|8. Distribute Synthetic Dividends| HODLer([Compliant RWA Holders])
+    PM -->|beforeAddLiquidity| Hook
+    Hook -->|identity lock| Ledger[User Liquidity Ledger]
 
-    classDef user fill:#E1F5FE,stroke:#0288D1;
-    classDef core fill:#EDE7F6,stroke:#5E35B1;
-    classDef hook fill:#FFF3E0,stroke:#F57C00;
-    classDef vault fill:#E8F5E9,stroke:#388E3C;
+    classDef user fill:#e0f2fe,stroke:#0369a1;
+    classDef core fill:#f3e8ff,stroke:#7e22ce;
+    classDef hook fill:#fff7ed,stroke:#ea580c;
+    classDef vault fill:#dcfce7,stroke:#16a34a;
 
-    class User,HODLer user;
-    class PM,Pool core;
-    class BS,AS,Calc,SBT hook;
+    class User,Holder user;
+    class Router,PM,Pool core;
+    class Hook,SBT,Ledger hook;
     class Vault vault;
 ```
 
-## Core Features
-
-- **KYC Compliance via SBT** - Merkle-proof-based Soulbound Token; only the SBT contract or owner can update compliance state
-- **Identity-Weighted Dynamic Pricing** - v4 fee override on a dynamic-fee pool: 2.0% (no SBT), 0.3% (SBT holder), 0.15% (30+ day holder)
-- **Authorized Identity Relayers** - approved router/helper contracts pass the real trader or LP in `hookData`; unapproved contracts cannot spoof another user's KYC identity
-- **LP Position Identity Lock** - LPs must hold SBT; liquidity tracked in hook's internal ledger
-- **FeeToken-Safe Dividends** - 5% of feeToken-denominated swap output routed to DividendVault, distributed pro-rata without late-joiner backdating; non-reward-token fee paths are skipped on-chain
-- **On-Chain Observability** - events expose compliance syncs, fee overrides, liquidity locks, and reward routing for demo verification
-
-## Why It Fits the Rubric
-
-- **Innovation** - turns a v4 pool into an identity-aware RWA market primitive: compliance state changes swap fees, LP access, and reward distribution in one hook.
-- **Market Value** - gives compliant assets a practical on-chain venue: lower fees for verified/long-term users, deterrent pricing for unverified flow, and fee-funded rewards for compliant holders.
-- **Completion** - includes CREATE2-mined hook permissions, real dynamic-fee override semantics, local PoolManager E2E coverage, X Layer demo transactions, and redeploy scripts for the final hardened branch.
-
-## Test Results
-
-The repository includes a GitHub Actions workflow that runs formatting, tests, contract-size build checks, and whitespace checks on every push and pull request.
-
-```
-66 tests passed, 0 failed, 0 skipped
-
-ComplianceSBT: 17/17 passed
-DividendVault: 14/14 passed
-EquiHook:      23/23 passed
-E2E:           12/12 passed
-```
-
-## Deployment Details
-
-Final deployment on **X Layer Testnet** (Chain ID 1952). The pool is initialized with `LPFeeLibrary.DYNAMIC_FEE_FLAG`, demo routers are authorized as identity relayers, and the hook returns `OVERRIDE_FEE_FLAG | tierFee` from `beforeSwap`, so identity pricing is applied by the v4 swap engine itself.
+## Final Deployment
 
 | Contract | Address |
 |----------|---------|
@@ -78,53 +107,61 @@ Final deployment on **X Layer Testnet** (Chain ID 1952). The pool is initialized
 | WETH | [`0x17619c650cBb8aa9AA475226384a4f26F6308926`](https://www.oklink.com/xlayer/address/0x17619c650cBb8aa9AA475226384a4f26F6308926) |
 | USDC / FeeToken | [`0x62bdB96b2E8733bfDB358cEf75e558dA6129c74E`](https://www.oklink.com/xlayer/address/0x62bdB96b2E8733bfDB358cEf75e558dA6129c74E) |
 
-## On-Chain Verification
+## Why It Fits The Rubric
 
-**Swap TX (status=success):** [`0x9a7bdb08...`](https://www.oklink.com/xlayer/tx/0x9a7bdb08ab000dd6bb478ea35d38e19f6385285ed3c132d3193ebc9324642a27)
+**Innovation:** EquiHook is not a protocol clone. The Hook creates an identity-aware asset venue where compliance status changes swap pricing, LP access, and reward distribution in one pool-level primitive.
 
-**Verified on-chain state from `VerifySubmission.s.sol`:**
+**Market value:** RWA markets need compliant access, differentiated user pricing, and auditable holder incentives. EquiHook packages those needs into X Layer-native pool behavior that can generate recurring swaps, LP activity, and claimable rewards.
+
+**Completion:** The project includes deployed contracts, a CREATE2-mined Hook address with correct permission bits, real v4 dynamic-fee semantics, a live swap transaction that triggers the Hook, and scripts that verify the final on-chain state.
+
+## Tests
+
+The repository includes a GitHub Actions workflow that runs formatting, tests, contract-size build checks, and whitespace checks on every push and pull request.
+
+```text
+66 tests passed, 0 failed, 0 skipped
+
+ComplianceSBT: 17/17 passed
+DividendVault: 14/14 passed
+EquiHook:      23/23 passed
+E2E:           12/12 passed
 ```
-Pool active liquidity = 1000000
-SBT balance(demo user) = 1
-isCompliant(demo user) = true
-Vault totalRewards = 493
-Demo user earned = 493
-Vault reward token balance = 493
-TIER0_FEE = 20000        (2.0% — no SBT deterrent)
-TIER1_FEE = 3000         (0.3% — SBT holder base)
-TIER2_FEE = 1500         (0.15% — 30+ day holder discount)
-```
 
-You can inspect the demo Hook on [X Layer Scan](https://www.oklink.com/xlayer/address/0x0f88692065F92f45B686bf6F616dfE0F32A20AC4).
+## Verify The Live Deployment
 
-## Build & Run
+This is a read-only verification path. It does not require a private key.
 
 ```bash
-# Build
+export HOOK_ADDRESS=0x0f88692065F92f45B686bf6F616dfE0F32A20AC4
+export SBT_ADDRESS=0xd4d285154F10C3037997aBDfbDf609C8656dbeD5
+export VAULT_ADDRESS=0x70d5b1C728840f98EC682F660E8515439Bb142fF
+export POOL_MANAGER_ADDRESS=0xc8c1CA142f518e5E864B1326fB1742E46C47F46A
+export SWAP_ROUTER_ADDRESS=0x0670dD30ee2C7b2a5b7276Ad4Cdca91991aeE0CF
+export WETH_ADDRESS=0x17619c650cBb8aa9AA475226384a4f26F6308926
+export USDC_ADDRESS=0x62bdB96b2E8733bfDB358cEf75e558dA6129c74E
+export FEE_TOKEN_ADDRESS=0x62bdB96b2E8733bfDB358cEf75e558dA6129c74E
+export DEMO_USER_ADDRESS=0x956fDBdfbb3124207Bdf72bDf9e4E947f888d3Cf
+
+forge script script/VerifySubmission.s.sol --tc VerifySubmission --rpc-url https://testrpc.xlayer.tech
+```
+
+## Run Locally
+
+```bash
 forge build
-
-# Run all tests
 forge test -v
+forge build --sizes
+```
 
-# Deploy on X Layer testnet
-PRIVATE_KEY=<key> forge script script/DeployAll.s.sol --tc DeployAll --rpc-url https://testrpc.xlayer.tech --broadcast
+Deploy and run a fresh X Layer testnet demo:
 
-# Copy the export block printed by DeployAll before running the demo scripts
-export HOOK_ADDRESS=<hook>
-export SBT_ADDRESS=<sbt>
-export VAULT_ADDRESS=<vault>
-export POOL_MANAGER_ADDRESS=<poolManager>
-export SWAP_ROUTER_ADDRESS=<router>
-export WETH_ADDRESS=<weth>
-export USDC_ADDRESS=<usdc>
-export FEE_TOKEN_ADDRESS=<usdc>
+```bash
+PRIVATE_KEY=<testnet-key> forge script script/DeployAll.s.sol --tc DeployAll --rpc-url https://testrpc.xlayer.tech --broadcast
 
-# Run FullTest (SBT mint + liquidity + swap + verify vault rewards)
-PRIVATE_KEY=<key> forge script script/FullTest.s.sol --tc FullTest --rpc-url https://testrpc.xlayer.tech --broadcast
+# Copy the export block printed by DeployAll, then run:
+PRIVATE_KEY=<testnet-key> forge script script/FullTest.s.sol --tc FullTest --rpc-url https://testrpc.xlayer.tech --broadcast
 
-# Copy the demo user printed by FullTest
-export DEMO_USER_ADDRESS=<deployer>
-
-# Verify final deployment wiring, dynamic-fee pool liquidity, and post-swap E2E state
+# Copy DEMO_USER_ADDRESS printed by FullTest, then run:
 forge script script/VerifySubmission.s.sol --tc VerifySubmission --rpc-url https://testrpc.xlayer.tech
 ```
